@@ -23,10 +23,14 @@ app.get('/api/alerts', (req, res) => {
   res.json(getAllAlerts());
 });
 
-app.post('/api/report', (req, res) => {
+
+const { pushAlertToArea } = require('./routes/sms');
+
+app.post('/api/report', async (req, res) => {
   const { location, category, description, reporterPhone } = req.body;
   if (!location || !description) return res.status(400).json({ error: 'Missing fields' });
   const alert = createAlert({ location, category, description, reporterPhone: reporterPhone || 'web' });
+  await pushAlertToArea(alert);
   res.json(alert);
 });
 

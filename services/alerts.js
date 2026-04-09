@@ -1,14 +1,6 @@
 const alerts = [];
+const subscribers = [];
 let idCounter = 1;
-
-const { getUsersInLocation } = require('./tracker');
-
-const africastalking = require('africastalking')({
-  apiKey: process.env.AT_API_KEY,
-  username: process.env.AT_USERNAME
-});
-
-const sms = africastalking.SMS;
 
 const CATEGORIES = {
   FAKE_TAXI: 'Fake taxi',
@@ -18,6 +10,94 @@ const CATEGORIES = {
   FAKE_OFFICIAL: 'Fake official',
   AREA_GUIDE: 'Area guide tip',
 };
+
+const AREA_GUIDES = {
+  'airport': `NaijaSafe GUIDE - Lagos Airport:
+- Use ONLY the official taxi desk inside arrivals hall
+- Ignore ALL men outside offering rides
+- Main road out is Airport Road heading to Ikeja
+- Nearest safe area: Ikeja (15 mins)
+- Emergency: dial 199`,
+
+  'oshodi': `NaijaSafe GUIDE - Oshodi:
+- Busy transport hub, keep bag in front
+- Board buses at the official park only
+- Avoid the underbridge area after dark
+- To Ikeja: take BRT bus from main stop
+- To Lagos Island: board danfo at overhead`,
+
+  'ikeja': `NaijaSafe GUIDE - Ikeja:
+- Generally safe commercial area
+- Allen Avenue is the main strip, well lit
+- Avoid side streets off Obafemi Awolowo after 9pm
+- ATMs: GTB and Access on Allen Avenue are reliable
+- To airport: 15 mins via Obafemi Awolowo Road`,
+
+  'wuse': `NaijaSafe GUIDE - Wuse Market Abuja:
+- Use GTB or Zenith ATMs only, avoid roadside BDCs
+- Main market is safe during the day
+- Keep valuables hidden in the market
+- To Maitama: 10 mins via Ahmadu Bello Way
+- To Garki: 15 mins via Independence Avenue`,
+
+  'lekki': `NaijaSafe GUIDE - Lekki Lagos:
+- Safe residential and commercial area
+- Admiralty Way is the main safe route
+- Avoid Third Mainland Bridge after midnight
+- To Victoria Island: 20 mins via Lekki-Epe Expressway
+- Toll gate area can have traffic go-slows`,
+
+  'abuja': `NaijaSafe GUIDE - Abuja Central:
+- One of Nigeria's safest cities
+- Wuse 2 and Maitama are the safest zones
+- Garki Area 11 market is busy but secure
+- Avoid Nyanya and Karu areas at night
+- Emergency: dial 112`,
+
+  'lagos': `NaijaSafe GUIDE - Lagos General:
+- Stay on major roads, avoid unknown shortcuts
+- Victoria Island and Lekki are safest for tourists
+- Always negotiate taxi fare BEFORE entering
+- Keep your phone hidden in public transport
+- Emergency: dial 199 or 112`,
+};
+
+function registerSubscriber(phone, location) {
+  const existing = subscribers.find(s => s.phone === phone);
+  if (existing) {
+    existing.location = location.trim().toLowerCase();
+    existing.updatedAt = new Date().toISOString();
+    console.log(`Subscriber ${phone} moved to ${location}`);
+  } else {
+    subscribers.push({
+      phone,
+      location: location.trim().toLowerCase(),
+      joinedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    console.log(`New subscriber ${phone} registered at ${location}`);
+  }
+}
+
+function getSubscribersByLocation(location) {
+  const query = location.trim().toLowerCase();
+  return subscribers.filter(s =>
+    s.location.includes(query) || query.includes(s.location.split(' ')[0])
+  );
+}
+
+function getAreaGuide(location) {
+  const loc = location.trim().toLowerCase();
+  for (const key in AREA_GUIDES) {
+    if (loc.includes(key)) return AREA_GUIDES[key];
+  }
+  return `NaijaSafe GUIDE - ${location}:
+- Stay in busy, well-lit areas
+- Negotiate all transport fares upfront
+- Keep valuables hidden and bag in front
+- Trust your instincts — if unsure, don't go
+- Emergency Nigeria: dial 199 or 112`;
+}
 
 function createAlert({ location, category, description, reporterPhone }) {
   const alert = {
@@ -31,24 +111,7 @@ function createAlert({ location, category, description, reporterPhone }) {
     active: true,
   };
   alerts.push(alert);
-  
-  try {
-    const users = getUsersInLocation(location);
-
-    users.forEach(user => {
-      sms.send({
-        to: [user.phone],
-        message: `⚠️ NaijaSafe Alert in ${location}:\n${category} - ${description}`
-      })
-      .then(() => console.log(`Alert sent to ${user.phone}`))
-      .catch(err => console.error('SMS error:', err));
-    });
-
-  } catch (err) {
-    console.error('Broadcast failed:', err);
-  }
-
-  console.log(`New alert created: [${category}] at ${location}`);
+  console.log(`New alert: [${category}] at ${location}`);
   return alert;
 }
 
@@ -64,14 +127,26 @@ function getAllAlerts() {
   return alerts.filter(a => a.active);
 }
 
-function seedDemoData() {
-  createAlert({ location: 'Murtala Mohammed Airport Lagos', category: CATEGORIES.FAKE_TAXI, description: 'Men in yellow vests at Gate 2 charging 10x fares. Use official taxi desk inside.', reporterPhone: '+2348012345678' });
-  createAlert({ location: 'Oshodi Lagos', category: CATEGORIES.THEFT, description: 'Pickpockets operating near the bus park. Keep your bag in front.', reporterPhone: '+2348098765432' });
-  createAlert({ location: 'Wuse Market Abuja', category: CATEGORIES.SCAM, description: 'Bureau de change by the east entrance giving fake notes. Use GTB ATM instead.', reporterPhone: '+2348055544433' });
-  createAlert({ location: 'Lekki Lagos', category: CATEGORIES.AREA_GUIDE, description: 'Safe area. Best okada routes are Admiralty Way. Avoid Third Mainland after midnight.', reporterPhone: '+2348011122233' });
-  createAlert({ location: 'Ikeja Lagos', category: CATEGORIES.FAKE_OFFICIAL, description: 'Men claiming to be LASTMA officers collecting illegal tolls near Allen Avenue.', reporterPhone: '+2348077788899' });
-  createAlert({ location: 'Kubwa Abuja', category: CATEGORIES.AREA_GUIDE, description: 'Relatively safe suburb. Main market is busy but secure during the day. Avoid unlit streets at night.', reporterPhone: '+2348033344455' });
-  console.log('Demo data seeded — 6 alerts loaded');
+function getAllSubscribers() {
+  return subscribers;
 }
 
-module.exports = { createAlert, getAlertsByLocation, getAllAlerts, CATEGORIES, seedDemoData };
+function seedDemoData() {
+  createAlert({ location: 'murtala mohammed airport lagos', category: CATEGORIES.FAKE_TAXI, description: 'Men in yellow vests at Gate 2 charging 10x fares. Use official taxi desk inside.', reporterPhone: '+2348012345678' });
+  createAlert({ location: 'oshodi lagos', category: CATEGORIES.THEFT, description: 'Pickpockets operating near the bus park. Keep your bag in front.', reporterPhone: '+2348098765432' });
+  createAlert({ location: 'wuse market abuja', category: CATEGORIES.SCAM, description: 'Bureau de change by east entrance giving fake notes. Use GTB ATM instead.', reporterPhone: '+2348055544433' });
+  createAlert({ location: 'lekki lagos', category: CATEGORIES.AREA_GUIDE, description: 'Safe area. Best routes via Admiralty Way. Avoid Third Mainland after midnight.', reporterPhone: '+2348011122233' });
+  createAlert({ location: 'ikeja lagos', category: CATEGORIES.FAKE_OFFICIAL, description: 'Men claiming to be LASTMA officers collecting illegal tolls near Allen Avenue.', reporterPhone: '+2348077788899' });
+  createAlert({ location: 'kubwa abuja', category: CATEGORIES.AREA_GUIDE, description: 'Relatively safe suburb. Main market secure during the day. Avoid unlit streets at night.', reporterPhone: '+2348033344455' });
+
+  registerSubscriber('+2348011111111', 'ikeja lagos');
+  registerSubscriber('+2348022222222', 'oshodi lagos');
+  registerSubscriber('+2348033333333', 'lekki lagos');
+  console.log('Demo data seeded — 6 alerts, 3 subscribers loaded');
+}
+
+module.exports = {
+  createAlert, getAlertsByLocation, getAllAlerts,
+  registerSubscriber, getSubscribersByLocation, getAreaGuide,
+  getAllSubscribers, CATEGORIES, seedDemoData,
+};
