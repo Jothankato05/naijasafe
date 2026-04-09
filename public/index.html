@@ -1,36 +1,214 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <title>NaijaSafe Live Dashboard</title>
-  <style>
-    body { font-family: Arial; background: #111; color: #fff; }
-    .alert { padding: 10px; margin: 10px; border-left: 5px solid red; }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NaijaSafe — Live Alert Dashboard</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; background: #0f1117; color: #e2e8f0; }
+  header { background: #1a1d27; border-bottom: 1px solid #2d3148; padding: 14px 24px; display: flex; align-items: center; justify-content: space-between; }
+  .logo { font-size: 20px; font-weight: 700; color: #fff; }
+  .logo span { color: #22c55e; }
+  .live-badge { background: #16a34a22; border: 1px solid #16a34a; color: #22c55e; font-size: 11px; padding: 3px 10px; border-radius: 20px; display: flex; align-items: center; gap: 6px; }
+  .live-dot { width: 7px; height: 7px; background: #22c55e; border-radius: 50%; animation: pulse 1.5s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; padding: 16px 24px; }
+  .stat { background: #1a1d27; border: 1px solid #2d3148; border-radius: 10px; padding: 14px 18px; }
+  .stat-val { font-size: 28px; font-weight: 700; color: #fff; }
+  .stat-lbl { font-size: 12px; color: #94a3b8; margin-top: 2px; }
+  .main { display: grid; grid-template-columns: 1fr 380px; gap: 12px; padding: 0 24px 24px; height: calc(100vh - 180px); }
+  #map { border-radius: 10px; border: 1px solid #2d3148; }
+  .sidebar { display: flex; flex-direction: column; gap: 12px; overflow: hidden; }
+  .panel { background: #1a1d27; border: 1px solid #2d3148; border-radius: 10px; padding: 14px; }
+  .panel-title { font-size: 13px; font-weight: 600; color: #94a3b8; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .alert-list { overflow-y: auto; flex: 1; }
+  .alert-item { background: #0f1117; border: 1px solid #2d3148; border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; border-left: 3px solid #ef4444; }
+  .alert-item.guide { border-left-color: #22c55e; }
+  .alert-item.theft { border-left-color: #f97316; }
+  .alert-item.scam { border-left-color: #eab308; }
+  .alert-loc { font-size: 13px; font-weight: 600; color: #fff; }
+  .alert-cat { font-size: 11px; color: #94a3b8; margin: 2px 0; }
+  .alert-desc { font-size: 12px; color: #cbd5e1; line-height: 1.4; }
+  .alert-time { font-size: 11px; color: #475569; margin-top: 4px; }
+  .report-form input, .report-form select, .report-form textarea { width: 100%; background: #0f1117; border: 1px solid #2d3148; border-radius: 6px; padding: 8px 10px; color: #e2e8f0; font-size: 13px; margin-bottom: 8px; outline: none; }
+  .report-form textarea { resize: none; height: 60px; }
+  .btn { width: 100%; background: #16a34a; color: #fff; border: none; border-radius: 6px; padding: 10px; font-size: 13px; font-weight: 600; cursor: pointer; }
+  .btn:hover { background: #15803d; }
+  .toast { position: fixed; bottom: 24px; right: 24px; background: #16a34a; color: #fff; padding: 12px 20px; border-radius: 8px; font-size: 13px; font-weight: 500; opacity: 0; transition: opacity 0.3s; z-index: 9999; }
+  .toast.show { opacity: 1; }
+</style>
 </head>
 <body>
 
-<h1>🚨 NaijaSafe Live Alerts</h1>
-<div id="alerts"></div>
+<header>
+  <div class="logo">Naija<span>Safe</span> Dashboard</div>
+  <div style="display:flex;align-items:center;gap:16px">
+    <span style="font-size:13px;color:#94a3b8">Protecting tourists across Nigeria</span>
+    <div class="live-badge"><div class="live-dot"></div> LIVE</div>
+  </div>
+  <button onclick="triggerDemoAlert()" style="background:#dc2626;color:#fff;border:none;border-radius:6px;padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer;animation:pulse 2s infinite">
+    DEMO: Trigger live alert
+  </button>
+</header>
 
+<div class="stats">
+  <div class="stat"><div class="stat-val" id="stat-total">0</div><div class="stat-lbl">Total alerts</div></div>
+  <div class="stat"><div class="stat-val" id="stat-danger" style="color:#ef4444">0</div><div class="stat-lbl">Danger alerts</div></div>
+  <div class="stat"><div class="stat-val" id="stat-guides" style="color:#22c55e">0</div><div class="stat-lbl">Area guides</div></div>
+  <div class="stat"><div class="stat-val" id="stat-cities">0</div><div class="stat-lbl">Cities covered</div></div>
+</div>
+
+<div class="main">
+  <div id="map"></div>
+  <div class="sidebar">
+    <div class="panel" style="flex:1;display:flex;flex-direction:column;overflow:hidden">
+      <div class="panel-title">Live alerts feed</div>
+      <div class="alert-list" id="alert-list"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-title">Report a danger</div>
+      <div class="report-form">
+        <input type="text" id="r-location" placeholder="Location (e.g. Oshodi Lagos)"/>
+        <select id="r-category">
+          <option value="Fake taxi">Fake taxi / transport</option>
+          <option value="Scam / fraud">Scam or fraud</option>
+          <option value="Theft reported">Theft reported</option>
+          <option value="Fake official">Fake official</option>
+          <option value="Unsafe road">Unsafe road</option>
+          <option value="Area guide tip">Area guide tip</option>
+        </select>
+        <textarea id="r-desc" placeholder="Describe what happened..."></textarea>
+        <button class="btn" onclick="submitReport()">Submit report</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-async function loadAlerts() {
-  const res = await fetch('/dashboard');
-  const data = await res.json();
+const COORDS = {
+  'lagos': [6.5244, 3.3792], 'abuja': [9.0765, 7.3986],
+  'airport': [6.5774, 3.3212], 'murtala': [6.5774, 3.3212],
+  'oshodi': [6.5570, 3.3470], 'ikeja': [6.6018, 3.3515],
+  'lekki': [6.4698, 3.5852], 'wuse': [9.0633, 7.4892],
+  'kubwa': [9.1569, 7.3086], 'victoria island': [6.4281, 3.4219],
+};
 
-  const container = document.getElementById('alerts');
-  container.innerHTML = '';
-
-  data.forEach(a => {
-    const div = document.createElement('div');
-    div.className = 'alert';
-    div.innerHTML = `<b>${a.location}</b><br>${a.category}<br>${a.description}`;
-    container.appendChild(div);
-  });
+function getCoords(location) {
+  const loc = location.toLowerCase();
+  for (const key in COORDS) {
+    if (loc.includes(key)) return COORDS[key];
+  }
+  return [9.0820, 8.6753];
 }
 
-setInterval(loadAlerts, 2000);
-loadAlerts();
-</script>
+const map = L.map('map').setView([8.5, 5.5], 6);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  attribution: '© OpenStreetMap © CARTO', maxZoom: 18
+}).addTo(map);
 
+const markers = {};
+
+function getMarkerColor(category) {
+  if (category.includes('guide')) return '#22c55e';
+  if (category.includes('Theft')) return '#f97316';
+  if (category.includes('Scam')) return '#eab308';
+  return '#ef4444';
+}
+
+function addMarker(alert) {
+  const coords = getCoords(alert.location);
+  const color = getMarkerColor(alert.category);
+  const icon = L.divIcon({
+    html: `<div style="width:14px;height:14px;background:${color};border-radius:50%;border:2px solid #fff;box-shadow:0 0 8px ${color}"></div>`,
+    iconSize: [14, 14], className: ''
+  });
+  const marker = L.marker(coords, { icon }).addTo(map);
+  marker.bindPopup(`<b>${alert.location}</b><br><span style="color:${color}">${alert.category}</span><br>${alert.description}`);
+  markers[alert.id] = marker;
+}
+
+function timeAgo(iso) {
+  const diff = Math.floor((Date.now() - new Date(iso)) / 1000);
+  if (diff < 60) return \`\${diff}s ago\`;
+  if (diff < 3600) return \`\${Math.floor(diff/60)}m ago\`;
+  return \`\${Math.floor(diff/3600)}h ago\`;
+}
+
+function renderAlerts(alerts) {
+  const list = document.getElementById('alert-list');
+  list.innerHTML = '';
+  const sorted = [...alerts].reverse();
+  sorted.forEach(a => {
+    const cls = a.category.includes('guide') ? 'guide' : a.category.includes('Theft') ? 'theft' : a.category.includes('Scam') ? 'scam' : '';
+    list.innerHTML += \`<div class="alert-item \${cls}">
+      <div class="alert-loc">\${a.location}</div>
+      <div class="alert-cat">\${a.category}</div>
+      <div class="alert-desc">\${a.description}</div>
+      <div class="alert-time">\${timeAgo(a.timestamp)}</div>
+    </div>\`;
+    if (!markers[a.id]) addMarker(a);
+  });
+  document.getElementById('stat-total').textContent = alerts.length;
+  document.getElementById('stat-danger').textContent = alerts.filter(a => !a.category.includes('guide')).length;
+  document.getElementById('stat-guides').textContent = alerts.filter(a => a.category.includes('guide')).length;
+  const cities = new Set(alerts.map(a => a.location.split(' ').pop())).size;
+  document.getElementById('stat-cities').textContent = cities;
+}
+
+async function fetchAlerts() {
+  try {
+    const res = await fetch('/api/alerts');
+    const data = await res.json();
+    renderAlerts(data);
+  } catch(e) { console.error('Fetch error', e); }
+}
+
+async function triggerDemoAlert() {
+  await fetch('/api/report', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      location: 'Murtala Mohammed Airport Lagos',
+      category: 'Fake taxi',
+      description: 'LIVE DEMO: Men in yellow vests at Gate 2 charging 10x fares right now. Use official taxi desk inside arrivals.',
+      reporterPhone: 'demo'
+    })
+  });
+  showToast('LIVE ALERT broadcasted to all nearby numbers!');
+  fetchAlerts();
+}
+
+async function submitReport() {
+  const location = document.getElementById('r-location').value.trim();
+  const category = document.getElementById('r-category').value;
+  const description = document.getElementById('r-desc').value.trim();
+  if (!location || !description) { showToast('Please fill in location and description'); return; }
+  const res = await fetch('/api/report', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ location, category, description, reporterPhone: 'dashboard' })
+  });
+  if (res.ok) {
+    showToast('Alert submitted and broadcast!');
+    document.getElementById('r-location').value = '';
+    document.getElementById('r-desc').value = '';
+    fetchAlerts();
+  }
+}
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 3000);
+}
+
+fetchAlerts();
+setInterval(fetchAlerts, 5000);
+</script>
 </body>
 </html>

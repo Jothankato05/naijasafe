@@ -1,99 +1,113 @@
 const express = require('express');
 const router = express.Router();
-const { createAlert, getAlertsByLocation, CATEGORIES } = require('../services/alerts');
-const { enterArea, leaveArea } = require('../services/tracker');
+const AfricasTalking = require('africastalking');
+const { createAlert, getAlertsByLocation, getAllAlerts, CATEGORIES } = require('../services/alerts');
 
-router.post('/', (req, res) => {
+const at = AfricasTalking({
+  apiKey: process.env.AT_API_KEY,
+  username: process.env.AT_USERNAME,
+});
+const sms = at.SMS;
+
+async function sendSMS(to, message) {
+  try {
+    const result = await sms.send({
+      to: Array.isArray(to) ? to : [to],
+      message,
+      // from: 'NaijaSafe', // Commented out to prevent InvalidSenderId errors in sandbox
+    });
+    console.log('SMS sent:', JSON.stringify(result));
+    return result;
+  } catch (err) {
+    console.error('SMS error:', err);
+  }
+}
+
+async function broadcastAlert(alert) {
+  const allAlerts = getAllAlerts();
+  const nearbyNumbers = allAlerts
+    .filter(a => a.location.includes(alert.location.split(' ')[0]))
+    .map(a => a.reporterPhone)
+    .filter(p => p !== alert.reporterPhone);
+
+  const uniqueNumbers = [...new Set(nearbyNumbers)];
+
+  if (uniqueNumbers.length > 0) {
+    const msg = `NaijaSafe ALERT - ${alert.location}:\n${alert.category}: ${alert.description.slice(0, 100)}\nStay safe!`;
+    await sendSMS(uniqueNumbers, msg);
+    console.log(`Broadcast sent to ${uniqueNumbers.length} numbers near ${alert.location}`);
+  }
+}
+
+router.post('/incoming', async (req, res) => {
   const { from, text } = req.body;
+  const parts = text.trim().split(',');
 
-  console.log(`Incoming SMS from ${from}: ${text}`);
-
-  let response = '';
-
-  // SIMPLE COMMAND PARSER
-  // adding safe fallbacks just in case
-  const safeText = text || '';
-  const message = safeText.toLowerCase();
-
-  // 1. CHECK ALERTS
-  if (message.startsWith('check')) {
-    const location = message.replace('check', '').trim();
-
-    const alerts = getAlertsByLocation(location);
-
-    if (alerts.length === 0) {
-      response = `No current alerts for ${location}. Stay cautious.`;
-    } else {
-      response = alerts
-        .map(a => `${a.category}: ${a.description}`)
-        .join('\n');
-    }
+  if (parts.length < 2) {
+    await sendSMS(from,
+      `NaijaSafe: Format is REPORT,Location,Description\nExample: REPORT,Oshodi,Fake police collecting money near bus park\nOr dial *384# to use the menu.`
+    );
+    return res.sendStatus(200);
   }
 
-  // 2. REPORT ALERT
-  else if (message.startsWith('report')) {
-    const parts = message.split(',');
+  const keyword = parts[0].trim().toUpperCase();
 
-    if (parts.length < 3) {
-      response = `Format: REPORT, location, description`;
-    } else {
-      const location = parts[1].trim();
-      const description = parts[2].trim();
-
-      createAlert({
-        location,
-        category: CATEGORIES.SCAM,
-        description,
-        reporterPhone: from
-      });
-
-      response = `Alert received for ${location}. You just helped someone stay safe.`;
-    }
-  }
-
-  // 3. GUIDE MODE (🔥 THIS IS YOUR SECRET WEAPON)
-  else if (message.startsWith('guide')) {
-    const location = message.replace('guide', '').trim();
-
-    const alerts = getAlertsByLocation(location);
-
-    if (alerts.length === 0) {
-      response = `No alerts for ${location}. Stay in busy areas and avoid isolated streets.`;
-    } else {
-      response = `Safety tips for ${location}:\n` +
-        alerts.map(a => `- ${a.description}`).join('\n');
-    }
-  }
-
-  // ENTER AREA
-  else if (message.startsWith('enter')) {
-    const location = message.replace('enter', '').trim();
+  if (keyword === 'REPORT') {
+    const location = parts[1]?.trim();
+    const description = parts[2]?.trim() || 'Danger reported';
 
     if (!location) {
-      response = `Please specify a location. Example: ENTER Ikeja`;
-    } else {
-      enterArea(from, location);
-
-      response = `Monitoring started for ${location}.\nNaijaSafe will alert you of any danger nearby. Stay sharp.`;
+      await sendSMS(from, `NaijaSafe: Please include a location.\nFormat: REPORT,Location,Description`);
+      return res.sendStatus(200);
     }
+
+    const alert = createAlert({
+      location,
+      category: CATEGORIES.SCAM,
+      description,
+      reporterPhone: from,
+    });
+
+    await sendSMS(from, `NaijaSafe: Report received! Alert #${alert.id} for "${location}" is now live. Thank you for keeping Nigeria safe.`);
+    await broadcastAlert(alert);
+
+  } else if (keyword === 'CHECK') {
+    const location = parts[1]?.trim();
+    if (!location) {
+      await sendSMS(from, `NaijaSafe: Format is CHECK,Location\nExample: CHECK,Ikeja`);
+      return res.sendStatus(200);
+    }
+    const found = getAlertsByLocation(location);
+    if (found.length === 0) {
+      await sendSMS(from, `NaijaSafe: No active alerts for "${location}". Stay alert and trust your instincts.`);
+    } else {
+      const msg = `NaijaSafe alerts near ${location}:\n` +
+        found.map((a, i) => `${i + 1}. ${a.category}: ${a.description.slice(0, 80)}`).join('\n');
+      await sendSMS(from, msg);
+    }
+
+  } else if (keyword === 'GUIDE') {
+    const location = parts[1]?.trim();
+    const found = getAlertsByLocation(location).filter(a => a.category === CATEGORIES.AREA_GUIDE);
+    if (found.length === 0) {
+      await sendSMS(from, `NaijaSafe: No guide yet for "${location}".\nGeneral tip: Stay in busy areas, avoid displaying valuables, trust your gut.`);
+    } else {
+      await sendSMS(from, `NaijaSafe guide for ${location}:\n${found[0].description}`);
+    }
+
+  } else {
+    await sendSMS(from,
+      `NaijaSafe commands:\nREPORT,Location,Description\nCHECK,Location\nGUIDE,Location\nOr dial *384# for menu.`
+    );
   }
 
-  // LEAVE AREA
-  else if (message.startsWith('leave')) {
-    leaveArea(from);
-
-    response = `Monitoring stopped.\nStay safe out there.`;
-  }
-
-  else {
-    response = `NaijaSafe Commands:
-CHECK Ikeja
-REPORT Ikeja, fake taxi near airport
-GUIDE Lekki`;
-  }
-
-  res.set('Content-Type', 'text/plain');
-  res.send(response);
+  res.sendStatus(200);
 });
 
-module.exports = router;
+router.post('/send-test', async (req, res) => {
+  const { phone, message } = req.body;
+  const result = await sendSMS(phone, message || 'NaijaSafe test message. Your API is connected!');
+  res.json(result);
+});
+
+module.exports = { router, sendSMS, broadcastAlert };
