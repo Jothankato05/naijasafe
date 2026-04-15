@@ -1,4 +1,12 @@
 require('dotenv').config();
+
+// Prevent AT SDK or any async errors from crashing the server
+process.on('uncaughtException', (err) => {
+  console.error('[NaijaSafe] Uncaught exception (server kept alive):', err.message);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[NaijaSafe] Unhandled rejection (server kept alive):', reason?.message || reason);
+});
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');

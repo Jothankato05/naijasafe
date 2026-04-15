@@ -139,6 +139,12 @@ function timeAgo(iso) {
   return \`\${Math.floor(diff/3600)}h ago\`;
 }
 
+function getRiskLevelBadge(category) {
+  if (category === 'SOS Incident' || category.includes('Theft')) return '<span style="background:#ef444422;color:#ef4444;border:1px solid #ef4444;padding:2px 6px;font-size:9px;border-radius:12px;margin-left:6px;vertical-align:middle;font-weight:700">🔴 HIGH RISK</span>';
+  if (category.includes('guide')) return '<span style="background:#22c55e22;color:#22c55e;border:1px solid #22c55e;padding:2px 6px;font-size:9px;border-radius:12px;margin-left:6px;vertical-align:middle;font-weight:700">🟢 LOW RISK</span>';
+  return '<span style="background:#eab30822;color:#eab308;border:1px solid #eab308;padding:2px 6px;font-size:9px;border-radius:12px;margin-left:6px;vertical-align:middle;font-weight:700">🟡 MEDIUM RISK</span>';
+}
+
 function renderAlerts(alerts) {
   const list = document.getElementById('alert-list');
   list.innerHTML = '';
@@ -146,7 +152,10 @@ function renderAlerts(alerts) {
   sorted.forEach(a => {
     const cls = a.category.includes('guide') ? 'guide' : a.category.includes('Theft') ? 'theft' : a.category.includes('Scam') ? 'scam' : '';
     list.innerHTML += \`<div class="alert-item \${cls}">
-      <div class="alert-loc">\${a.location}</div>
+      <div class="alert-loc" style="display:flex;align-items:center;">
+        <span style="text-transform:capitalize">\${a.location}</span>
+        \${getRiskLevelBadge(a.category)}
+      </div>
       <div class="alert-cat">\${a.category}</div>
       <div class="alert-desc">\${a.description}</div>
       <div class="alert-time">\${timeAgo(a.timestamp)}</div>

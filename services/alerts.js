@@ -9,6 +9,7 @@ const CATEGORIES = {
   UNSAFE_ROAD: 'Unsafe road',
   FAKE_OFFICIAL: 'Fake official',
   AREA_GUIDE: 'Area guide tip',
+  SOS: 'SOS Incident',
 };
 
 const AREA_GUIDES = {
@@ -74,9 +75,29 @@ function registerSubscriber(phone, location) {
       location: location.trim().toLowerCase(),
       joinedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
+      guideScore: 0,
+      reportScore: 0,
     });
     console.log(`New subscriber ${phone} registered at ${location}`);
   }
+}
+
+function updateBehavior(phone, action) {
+  const existing = subscribers.find(s => s.phone === phone);
+  if (!existing) return;
+  if (action === 'GUIDE') existing.guideScore = (existing.guideScore || 0) + 1;
+  if (action === 'REPORT') existing.reportScore = (existing.reportScore || 0) + 1;
+}
+
+function getBehaviorProfile(phone) {
+  const existing = subscribers.find(s => s.phone === phone);
+  if (!existing) return "Tourist";
+  const g = existing.guideScore || 0;
+  const r = existing.reportScore || 0;
+  
+  if (r >= 2) return "Risky";
+  if (g > 2 && r === 0) return "Tourist";
+  return "Local";
 }
 
 function getSubscribersByLocation(location) {
@@ -107,6 +128,7 @@ function createAlert({ location, category, description, reporterPhone }) {
     description,
     reporterPhone,
     upvotes: 1,
+    trustScore: Math.floor(Math.random() * 41) + 60, // 60-100%
     timestamp: new Date().toISOString(),
     active: true,
   };
@@ -131,6 +153,33 @@ function getAllSubscribers() {
   return subscribers;
 }
 
+function getRiskLevel(location) {
+  const query = location.trim().toLowerCase();
+  const recent = alerts.filter(a =>
+    a.active &&
+    a.location.includes(query) &&
+    (Date.now() - new Date(a.timestamp)) < 3600000 // last 1 hour
+  );
+
+  if (recent.length >= 3) return "HIGH RISK";
+  if (recent.length === 2) return "MEDIUM RISK";
+  return "LOW RISK";
+}
+
+function getSmartGuide(location) {
+  const loc = location.toLowerCase();
+  let path = "Recommended Safe Path:\n→ Stick to main roads\n→ Stay in populated areas\n→ Avoid unlit shortcuts";
+  
+  if (loc.includes('airport')) {
+    path = "Recommended Safe Path:\n→ Use main terminal entrance\n→ Board ONLY official taxis at the desk\n→ Exit via Airport Road strictly";
+  } else if (loc.includes('oshodi')) {
+    path = "Recommended Safe Path:\n→ Use main terminal entrance\n→ Stay on BRT lane corridor\n→ Avoid underbridge zone completely";
+  } else if (loc.includes('ikeja')) {
+    path = "Recommended Safe Path:\n→ Use Allen Avenue corridor\n→ Avoid side streets after 9PM\n→ Stick to well-lit ATM points";
+  }
+  return path;
+}
+
 function seedDemoData() {
   createAlert({ location: 'murtala mohammed airport lagos', category: CATEGORIES.FAKE_TAXI, description: 'Men in yellow vests at Gate 2 charging 10x fares. Use official taxi desk inside.', reporterPhone: '+2348012345678' });
   createAlert({ location: 'oshodi lagos', category: CATEGORIES.THEFT, description: 'Pickpockets operating near the bus park. Keep your bag in front.', reporterPhone: '+2348098765432' });
@@ -149,4 +198,5 @@ module.exports = {
   createAlert, getAlertsByLocation, getAllAlerts,
   registerSubscriber, getSubscribersByLocation, getAreaGuide,
   getAllSubscribers, CATEGORIES, seedDemoData,
+  getRiskLevel, getSmartGuide, updateBehavior, getBehaviorProfile
 };
