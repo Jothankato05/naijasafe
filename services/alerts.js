@@ -10,6 +10,19 @@ const CATEGORIES = {
   FAKE_OFFICIAL: 'Fake official',
   AREA_GUIDE: 'Area guide tip',
   SOS: 'SOS Incident',
+  ASSAULT: 'Assault / Robbery',
+  KIDNAPPING: 'Kidnapping / Abduction',
+  MEDICAL: 'Medical Emergency',
+};
+
+// SecureLink binds each physical trigger to the emergency it realistically
+// signals. An offline SOS arrives here as an SMS, so the mapping has to live
+// on this side too.
+const TRIGGER_CATEGORY = {
+  shake: CATEGORIES.ASSAULT,
+  volume: CATEGORIES.KIDNAPPING,
+  voice: CATEGORIES.MEDICAL,
+  button: CATEGORIES.SOS,
 };
 
 const AREA_GUIDES = {
@@ -114,16 +127,19 @@ function getAreaGuide(location) {
 - Emergency Nigeria: dial 199 or 112`;
 }
 
-async function createAlert({ location, category, description, reporterPhone, source }) {
+// `geo` lets a caller supply exact coordinates (SecureLink phones carry GPS
+// even with no data connection); without it we fall back to the gazetteer's
+// best guess for the area name.
+async function createAlert({ location, category, description, reporterPhone, source, geo }) {
   const loc = location.trim().toLowerCase();
-  const geo = toGeoPoint(loc);
+  const point = geo || toGeoPoint(loc);
   const alert = await Alert.create({
     location: loc,
     category,
     description,
     reporterPhone: reporterPhone || 'web',
     source: source || 'web',
-    ...(geo ? { geo } : {}),
+    ...(point ? { geo: point } : {}),
   });
   console.log(`New alert: [${category}] at ${location}`);
   return alert;
@@ -156,6 +172,19 @@ async function getAlertsNear(lat, lng, radiusMeters = 5000) {
 
 async function getAllSubscribers() {
   return Subscriber.find({});
+}
+
+// Coordinate-based subscriber lookup. An SOS raised from GPS has no area name
+// to match on, so the warning radius is drawn around the actual point instead.
+async function getSubscribersNear(lat, lng, radiusMeters = 5000) {
+  return Subscriber.find({
+    geo: {
+      $near: {
+        $geometry: { type: 'Point', coordinates: [Number(lng), Number(lat)] },
+        $maxDistance: Number(radiusMeters),
+      },
+    },
+  }).limit(500);
 }
 
 async function getRiskLevel(location) {
@@ -206,7 +235,7 @@ async function seedDemoData() {
 
 module.exports = {
   createAlert, getAlertsByLocation, getAllAlerts, getAlertsNear,
-  registerSubscriber, getSubscribersByLocation, getAreaGuide,
-  getAllSubscribers, CATEGORIES, seedDemoData,
+  registerSubscriber, getSubscribersByLocation, getSubscribersNear, getAreaGuide,
+  getAllSubscribers, CATEGORIES, TRIGGER_CATEGORY, seedDemoData,
   getRiskLevel, getSmartGuide, updateBehavior, getBehaviorProfile
 };

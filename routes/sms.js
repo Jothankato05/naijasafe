@@ -3,8 +3,8 @@ const router = express.Router();
 const AfricasTalking = require('africastalking');
 const {
   createAlert, getAlertsByLocation, getAllAlerts,
-  registerSubscriber, getSubscribersByLocation,
-  getAreaGuide, CATEGORIES, getRiskLevel, getSmartGuide,
+  registerSubscriber, getSubscribersByLocation, getSubscribersNear,
+  getAreaGuide, CATEGORIES, TRIGGER_CATEGORY, getRiskLevel, getSmartGuide,
   updateBehavior, getBehaviorProfile
 } = require('../services/alerts');
 
@@ -46,6 +46,76 @@ async function pushAlertToArea(alert) {
   }
 }
 
+// SecureLink's offline SOS wire format. When the app loses data but still has
+// GSM, it sends exactly this — GPS is on-device, so the coordinates are real
+// even with no network:
+//
+//   SL|<trigger>|<lat>|<lng>|<description>
+//
+// e.g. SL|volume|6.5244|3.3792|Silent duress trigger
+const SL_PREFIX = /^SL\s*\|/i;
+
+function parseSecureLinkSms(raw) {
+  const parts = raw.split('|');
+  if (parts.length < 4) return null;
+  const trigger = (parts[1] || 'button').trim().toLowerCase();
+  const lat = parseFloat(parts[2]);
+  const lng = parseFloat(parts[3]);
+  const description = (parts.slice(4).join('|') || '').trim();
+  const hasFix = Number.isFinite(lat) && Number.isFinite(lng)
+    && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+  return {
+    trigger: TRIGGER_CATEGORY[trigger] ? trigger : 'button',
+    category: TRIGGER_CATEGORY[trigger] || CATEGORIES.SOS,
+    lat: hasFix ? lat : null,
+    lng: hasFix ? lng : null,
+    description: description || 'SecureLink offline SOS — user in distress.',
+  };
+}
+
+async function handleSecureLinkSos(from, raw, res) {
+  const parsed = parseSecureLinkSms(raw);
+  if (!parsed) {
+    await sendSMS(from, 'NaijaSafe: SOS received but could not be read. Reply SOS for emergency help.');
+    return res.sendStatus(200);
+  }
+
+  const { trigger, category, lat, lng, description } = parsed;
+  // Without a fix we can still raise the alert — it just can't be geofenced,
+  // so nearby subscribers won't be computed for it.
+  const locationLabel = lat != null
+    ? `lat ${lat.toFixed(3)}, lng ${lng.toFixed(3)}`
+    : 'unknown location';
+
+  const alert = await createAlert({
+    location: locationLabel,
+    category,
+    description,
+    reporterPhone: from,
+    source: 'securelink-sms',
+    geo: lat != null ? { type: 'Point', coordinates: [lng, lat] } : undefined,
+  });
+
+  await sendSMS(from,
+    `NaijaSafe: ${category} alert received offline.\nRef ${alert._id.toString().slice(-6).toUpperCase()}\nYour location was captured. Responders and people near you are being notified.\nCall 112 if you can.`
+  );
+
+  // Warn everyone subscribed within 5km of the actual coordinates.
+  if (lat != null) {
+    const nearby = await getSubscribersNear(lat, lng, 5000);
+    const numbers = [...new Set(nearby.map(s => s.phone).filter(p => p && p !== from))];
+    if (numbers.length > 0) {
+      const mapLink = `https://maps.google.com/?q=${lat},${lng}`;
+      await sendSMS(numbers,
+        `🚨 LIVE EMERGENCY NEAR YOU\n${category}\n${description}\n\nLocation: ${mapLink}\n\nAvoid the area, or assist ONLY if safe to do so.`
+      );
+      console.log(`[NaijaSafe] SecureLink offline SOS (${trigger}) pushed to ${numbers.length} subscribers`);
+    }
+  }
+
+  return res.sendStatus(200);
+}
+
 router.post('/incoming', async (req, res) => {
   const { from, text } = req.body;
   if (!from || !text) return res.sendStatus(200);
@@ -55,6 +125,12 @@ router.post('/incoming', async (req, res) => {
   const keyword = parts[0].toUpperCase();
 
   try {
+    // Checked before the keyword table — an offline SOS from the SecureLink
+    // app must never fall through to the generic help text.
+    if (SL_PREFIX.test(raw)) {
+      return await handleSecureLinkSos(from, raw, res);
+    }
+
     // SOS - Panic Mode
     if (keyword === 'SOS') {
       await sendSMS(from, "NaijaSafe: Emergency alert sent. Stay where you are. Help is being notified.");
