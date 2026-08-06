@@ -1,6 +1,6 @@
-const alerts = [];
-const subscribers = [];
-let idCounter = 1;
+const Alert = require('../models/Alert');
+const Subscriber = require('../models/Subscriber');
+const { toGeoPoint } = require('./geocode');
 
 const CATEGORIES = {
   FAKE_TAXI: 'Fake taxi',
@@ -63,46 +63,40 @@ const AREA_GUIDES = {
 - Emergency: dial 199 or 112`,
 };
 
-function registerSubscriber(phone, location) {
-  const existing = subscribers.find(s => s.phone === phone);
-  if (existing) {
-    existing.location = location.trim().toLowerCase();
-    existing.updatedAt = new Date().toISOString();
-    console.log(`Subscriber ${phone} moved to ${location}`);
-  } else {
-    subscribers.push({
-      phone,
-      location: location.trim().toLowerCase(),
-      joinedAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      guideScore: 0,
-      reportScore: 0,
-    });
-    console.log(`New subscriber ${phone} registered at ${location}`);
-  }
+async function registerSubscriber(phone, location) {
+  const loc = location.trim().toLowerCase();
+  const geo = toGeoPoint(loc);
+  const existing = await Subscriber.findOneAndUpdate(
+    { phone },
+    { $set: { location: loc, ...(geo ? { geo } : {}) } },
+    { new: true, upsert: true, setDefaultsOnInsert: true }
+  );
+  console.log(`Subscriber ${phone} set to ${location}`);
+  return existing;
 }
 
-function updateBehavior(phone, action) {
-  const existing = subscribers.find(s => s.phone === phone);
-  if (!existing) return;
-  if (action === 'GUIDE') existing.guideScore = (existing.guideScore || 0) + 1;
-  if (action === 'REPORT') existing.reportScore = (existing.reportScore || 0) + 1;
+async function updateBehavior(phone, action) {
+  const inc = {};
+  if (action === 'GUIDE') inc.guideScore = 1;
+  if (action === 'REPORT') inc.reportScore = 1;
+  if (Object.keys(inc).length === 0) return;
+  await Subscriber.updateOne({ phone }, { $inc: inc });
 }
 
-function getBehaviorProfile(phone) {
-  const existing = subscribers.find(s => s.phone === phone);
-  if (!existing) return "Tourist";
+async function getBehaviorProfile(phone) {
+  const existing = await Subscriber.findOne({ phone });
+  if (!existing) return 'Tourist';
   const g = existing.guideScore || 0;
   const r = existing.reportScore || 0;
-  
-  if (r >= 2) return "Risky";
-  if (g > 2 && r === 0) return "Tourist";
-  return "Local";
+  if (r >= 2) return 'Risky';
+  if (g > 2 && r === 0) return 'Tourist';
+  return 'Local';
 }
 
-function getSubscribersByLocation(location) {
+async function getSubscribersByLocation(location) {
   const query = location.trim().toLowerCase();
-  return subscribers.filter(s =>
+  const all = await Subscriber.find({});
+  return all.filter(s =>
     s.location.includes(query) || query.includes(s.location.split(' ')[0])
   );
 }
@@ -120,82 +114,98 @@ function getAreaGuide(location) {
 - Emergency Nigeria: dial 199 or 112`;
 }
 
-function createAlert({ location, category, description, reporterPhone }) {
-  const alert = {
-    id: idCounter++,
-    location: location.trim().toLowerCase(),
+async function createAlert({ location, category, description, reporterPhone, source }) {
+  const loc = location.trim().toLowerCase();
+  const geo = toGeoPoint(loc);
+  const alert = await Alert.create({
+    location: loc,
     category,
     description,
-    reporterPhone,
-    upvotes: 1,
-    trustScore: Math.floor(Math.random() * 41) + 60, // 60-100%
-    timestamp: new Date().toISOString(),
-    active: true,
-  };
-  alerts.push(alert);
+    reporterPhone: reporterPhone || 'web',
+    source: source || 'web',
+    ...(geo ? { geo } : {}),
+  });
   console.log(`New alert: [${category}] at ${location}`);
   return alert;
 }
 
-function getAlertsByLocation(location) {
+async function getAlertsByLocation(location) {
   const query = location.trim().toLowerCase();
-  return alerts
-    .filter(a => a.active && a.location.includes(query))
-    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-    .slice(0, 3);
+  // Regex substring match keeps parity with the old in-memory .includes() search.
+  return Alert.find({ active: true, location: { $regex: query, $options: 'i' } })
+    .sort({ createdAt: -1 })
+    .limit(3);
 }
 
-function getAllAlerts() {
-  return alerts.filter(a => a.active);
+async function getAllAlerts() {
+  return Alert.find({ active: true }).sort({ createdAt: -1 });
 }
 
-function getAllSubscribers() {
-  return subscribers;
+// Geospatial lookup for SecureLink's map — alerts within radiusMeters of a point.
+async function getAlertsNear(lat, lng, radiusMeters = 5000) {
+  return Alert.find({
+    active: true,
+    geo: {
+      $near: {
+        $geometry: { type: 'Point', coordinates: [Number(lng), Number(lat)] },
+        $maxDistance: Number(radiusMeters),
+      },
+    },
+  }).limit(50);
 }
 
-function getRiskLevel(location) {
+async function getAllSubscribers() {
+  return Subscriber.find({});
+}
+
+async function getRiskLevel(location) {
   const query = location.trim().toLowerCase();
-  const recent = alerts.filter(a =>
-    a.active &&
-    a.location.includes(query) &&
-    (Date.now() - new Date(a.timestamp)) < 3600000 // last 1 hour
-  );
-
-  if (recent.length >= 3) return "HIGH RISK";
-  if (recent.length === 2) return "MEDIUM RISK";
-  return "LOW RISK";
+  const oneHourAgo = new Date(Date.now() - 3600000);
+  const recentCount = await Alert.countDocuments({
+    active: true,
+    location: { $regex: query, $options: 'i' },
+    createdAt: { $gte: oneHourAgo },
+  });
+  if (recentCount >= 3) return 'HIGH RISK';
+  if (recentCount === 2) return 'MEDIUM RISK';
+  return 'LOW RISK';
 }
 
 function getSmartGuide(location) {
   const loc = location.toLowerCase();
-  let path = "Recommended Safe Path:\n→ Stick to main roads\n→ Stay in populated areas\n→ Avoid unlit shortcuts";
-  
+  let path = 'Recommended Safe Path:\n→ Stick to main roads\n→ Stay in populated areas\n→ Avoid unlit shortcuts';
+
   if (loc.includes('airport')) {
-    path = "Recommended Safe Path:\n→ Use main terminal entrance\n→ Board ONLY official taxis at the desk\n→ Exit via Airport Road strictly";
+    path = 'Recommended Safe Path:\n→ Use main terminal entrance\n→ Board ONLY official taxis at the desk\n→ Exit via Airport Road strictly';
   } else if (loc.includes('oshodi')) {
-    path = "Recommended Safe Path:\n→ Use main terminal entrance\n→ Stay on BRT lane corridor\n→ Avoid underbridge zone completely";
+    path = 'Recommended Safe Path:\n→ Use main terminal entrance\n→ Stay on BRT lane corridor\n→ Avoid underbridge zone completely';
   } else if (loc.includes('ikeja')) {
-    path = "Recommended Safe Path:\n→ Use Allen Avenue corridor\n→ Avoid side streets after 9PM\n→ Stick to well-lit ATM points";
+    path = 'Recommended Safe Path:\n→ Use Allen Avenue corridor\n→ Avoid side streets after 9PM\n→ Stick to well-lit ATM points';
   }
   return path;
 }
 
-function seedDemoData() {
-  createAlert({ location: 'murtala mohammed airport lagos', category: CATEGORIES.FAKE_TAXI, description: 'Men in yellow vests at Gate 2 charging 10x fares. Use official taxi desk inside.', reporterPhone: '+2348012345678' });
-  createAlert({ location: 'oshodi lagos', category: CATEGORIES.THEFT, description: 'Pickpockets operating near the bus park. Keep your bag in front.', reporterPhone: '+2348098765432' });
-  createAlert({ location: 'wuse market abuja', category: CATEGORIES.SCAM, description: 'Bureau de change by east entrance giving fake notes. Use GTB ATM instead.', reporterPhone: '+2348055544433' });
-  createAlert({ location: 'lekki lagos', category: CATEGORIES.AREA_GUIDE, description: 'Safe area. Best routes via Admiralty Way. Avoid Third Mainland after midnight.', reporterPhone: '+2348011122233' });
-  createAlert({ location: 'ikeja lagos', category: CATEGORIES.FAKE_OFFICIAL, description: 'Men claiming to be LASTMA officers collecting illegal tolls near Allen Avenue.', reporterPhone: '+2348077788899' });
-  createAlert({ location: 'kubwa abuja', category: CATEGORIES.AREA_GUIDE, description: 'Relatively safe suburb. Main market secure during the day. Avoid unlit streets at night.', reporterPhone: '+2348033344455' });
+async function seedDemoData() {
+  const count = await Alert.countDocuments({});
+  if (count > 0) {
+    console.log('[NaijaSafe] Alerts already present — skipping demo seed.');
+    return;
+  }
+  await createAlert({ location: 'murtala mohammed airport lagos', category: CATEGORIES.FAKE_TAXI, description: 'Men in yellow vests at Gate 2 charging 10x fares. Use official taxi desk inside.', reporterPhone: '+2348012345678' });
+  await createAlert({ location: 'oshodi lagos', category: CATEGORIES.THEFT, description: 'Pickpockets operating near the bus park. Keep your bag in front.', reporterPhone: '+2348098765432' });
+  await createAlert({ location: 'wuse market abuja', category: CATEGORIES.SCAM, description: 'Bureau de change by east entrance giving fake notes. Use GTB ATM instead.', reporterPhone: '+2348055544433' });
+  await createAlert({ location: 'lekki lagos', category: CATEGORIES.AREA_GUIDE, description: 'Safe area. Best routes via Admiralty Way. Avoid Third Mainland after midnight.', reporterPhone: '+2348011122233' });
+  await createAlert({ location: 'ikeja lagos', category: CATEGORIES.FAKE_OFFICIAL, description: 'Men claiming to be LASTMA officers collecting illegal tolls near Allen Avenue.', reporterPhone: '+2348077788899' });
+  await createAlert({ location: 'kubwa abuja', category: CATEGORIES.AREA_GUIDE, description: 'Relatively safe suburb. Main market secure during the day. Avoid unlit streets at night.', reporterPhone: '+2348033344455' });
 
-  registerSubscriber('+2348011111111', 'ikeja lagos');
-  registerSubscriber('+2348022222222', 'oshodi lagos');
-  registerSubscriber('+2348033333333', 'lekki lagos');
+  await registerSubscriber('+2348011111111', 'ikeja lagos');
+  await registerSubscriber('+2348022222222', 'oshodi lagos');
+  await registerSubscriber('+2348033333333', 'lekki lagos');
   console.log('Demo data seeded — 6 alerts, 3 subscribers loaded');
 }
 
 module.exports = {
-  createAlert, getAlertsByLocation, getAllAlerts,
+  createAlert, getAlertsByLocation, getAllAlerts, getAlertsNear,
   registerSubscriber, getSubscribersByLocation, getAreaGuide,
   getAllSubscribers, CATEGORIES, seedDemoData,
   getRiskLevel, getSmartGuide, updateBehavior, getBehaviorProfile
