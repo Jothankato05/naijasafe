@@ -50,10 +50,32 @@ async function pushAlertToArea(alert) {
 // GSM, it sends exactly this — GPS is on-device, so the coordinates are real
 // even with no network:
 //
-//   SL|<trigger>|<lat>|<lng>|<description>
+//   SL|<trigger>|<lat>|<lng>|<description>|<category>
 //
-// e.g. SL|volume|6.5244|3.3792|Silent duress trigger
+// e.g. SL|volume|6.5244|3.3792|Silent duress trigger|kidnapping
+//
+// Category is last and optional, so messages from older builds that omit it
+// still parse — the trigger implies a category when it's missing.
 const SL_PREFIX = /^SL\s*\|/i;
+
+// Which agency owns which emergency. Mirrors backend/config/agencies.js; a
+// no-network alert has to reach the right responders too.
+const CATEGORY_AGENCY = {
+  crime: 'NPF', assault: 'NPF', robbery: 'NPF', kidnapping: 'NPF',
+  medical: 'Ambulance / Hospital',
+  accident: 'FRSC',
+  fire: 'NEMA', flood: 'NEMA', disaster: 'NEMA',
+  infrastructure: 'NSCDC',
+  general: 'NPF',
+};
+
+const CATEGORY_LABEL = {
+  crime: 'Crime in progress', assault: 'Assault / Robbery', robbery: 'Robbery',
+  kidnapping: 'Kidnapping / Abduction', medical: 'Medical Emergency',
+  accident: 'Road Traffic Accident', fire: 'Fire', flood: 'Flood',
+  disaster: 'Disaster', infrastructure: 'Critical Infrastructure',
+  general: 'SOS Incident',
+};
 
 function parseSecureLinkSms(raw) {
   const parts = raw.split('|');
@@ -61,12 +83,31 @@ function parseSecureLinkSms(raw) {
   const trigger = (parts[1] || 'button').trim().toLowerCase();
   const lat = parseFloat(parts[2]);
   const lng = parseFloat(parts[3]);
-  const description = (parts.slice(4).join('|') || '').trim();
+
+  // Field 6 is the category when present; everything between the coordinates
+  // and it is the description, which may itself contain pipes.
+  const tail = parts.slice(4);
+  let explicitCategory = null;
+  if (tail.length > 1) {
+    const last = tail[tail.length - 1].trim().toLowerCase();
+    if (CATEGORY_AGENCY[last]) {
+      explicitCategory = last;
+      tail.pop();
+    }
+  }
+  const description = tail.join('|').trim();
+
   const hasFix = Number.isFinite(lat) && Number.isFinite(lng)
     && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+
+  const resolvedCategory = explicitCategory
+    || { shake: 'assault', volume: 'kidnapping', voice: 'medical', button: 'general' }[trigger]
+    || 'general';
+
   return {
     trigger: TRIGGER_CATEGORY[trigger] ? trigger : 'button',
-    category: TRIGGER_CATEGORY[trigger] || CATEGORIES.SOS,
+    category: CATEGORY_LABEL[resolvedCategory] || CATEGORIES.SOS,
+    agency: CATEGORY_AGENCY[resolvedCategory] || 'NPF',
     lat: hasFix ? lat : null,
     lng: hasFix ? lng : null,
     description: description || 'SecureLink offline SOS — user in distress.',
@@ -80,7 +121,7 @@ async function handleSecureLinkSos(from, raw, res) {
     return res.sendStatus(200);
   }
 
-  const { trigger, category, lat, lng, description } = parsed;
+  const { trigger, category, agency, lat, lng, description } = parsed;
   // Without a fix we can still raise the alert — it just can't be geofenced,
   // so nearby subscribers won't be computed for it.
   const locationLabel = lat != null
@@ -97,7 +138,7 @@ async function handleSecureLinkSos(from, raw, res) {
   });
 
   await sendSMS(from,
-    `NaijaSafe: ${category} alert received offline.\nRef ${alert._id.toString().slice(-6).toUpperCase()}\nYour location was captured. Responders and people near you are being notified.\nCall 112 if you can.`
+    `NaijaSafe: ${category} alert received offline.\nRef ${alert._id.toString().slice(-6).toUpperCase()}\nRouted to ${agency}. Your location was captured and people near you are being warned.\nCall 112 if you can.`
   );
 
   // Warn everyone subscribed within 5km of the actual coordinates.
